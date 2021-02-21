@@ -42,4 +42,4 @@ def main():
 
 ## Output
 
-![Example Workflow](https://raw.githubusercontent.com/mweagle/PyWorkflowGraphSimulator/master/site/Example%20Workflow.gv.svg)
+![Example Workflow](https://raw.githubusercontent.com/mweagle/PyWorkflowGraphSimulator/master/site/Example_Workflow_gv_svg.png)
