@@ -1,0 +1,31 @@
+from pipe import *
+
+################################################################################
+def main():
+    workflow = WorkflowGraph(name="Example Workflow", run_count=100000)
+    workflow.new_subgraph("Some Work").serial(
+        ("OK Step1", NormalGenerator(10, 2)),
+        ("OK Step2", NormalGenerator(8, 2)),
+    )
+    workflow.new_subgraph("Safely Random").serial(
+        ("Roll 1", UniformGenerator(10, 20)),
+        ("Roll 2", UniformGenerator(20, 40)),
+    )
+    workflow.new_subgraph("Flaky Latency").serial(
+        ("Erratic", BernoulliGenerator(0.1, 100))
+    )
+    workflow.new_subgraph("Troublesome").serial(
+        ("Failing Step", FailingGenerator(failure_rate=0.1))
+    )
+
+    # Stitch everything together
+    workflow.resolve()
+    workflow.graph.evaluate(mode="linear")
+    graphviz_output = workflow.as_dot()
+
+
+################################################################################
+# MAIN
+################################################################################
+if __name__ == "__main__":
+    main()
