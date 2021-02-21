@@ -102,7 +102,6 @@ class DurationGenerator(ABC):
     def graphviz_node_attrs(self):
         return self.__dict__
 
-    # @abstractmethod
     def graphviz_node(self, node_id, parent_graph):
         this_barename = classname_for_object(self)
         generator_params = []
