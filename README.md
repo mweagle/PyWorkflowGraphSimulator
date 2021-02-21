@@ -6,7 +6,8 @@ See _pert.py_ and _tasks.py_ for example usage for now...
 
 ## Input
 
-```
+```python
+
 # File: tasks.py
 ################################################################################
 def main():
