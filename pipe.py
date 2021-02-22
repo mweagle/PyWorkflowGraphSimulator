@@ -57,13 +57,48 @@ def duration_percentiles(array_of_durations):
     return numpy.percentile(valid, JOIN_PERCENTILES)
 
 
-def graphviz_percentiles_label(percentile_values):
+def formatted_float(in_value):
+    float_value = "{0:.3f}".format(in_value)
+    if in_value == math.floor(in_value):
+        float_value = "{0:.0f}".format(in_value)
+    return float_value
+
+
+def graphviz_percentiles_label(percentile_values, show_end_dates):
+
     percentile_stats = []
+
     for num, percent_val in enumerate(JOIN_PERCENTILES):
-        p_value = "{0:.3f}".format(percentile_values[num])
+        # Handle the case where it's already a floor
+        p_value = formatted_float(percentile_values[num])
+        percentile_entry = "p{0}={1}".format(percent_val, p_value)
+
+        if show_end_dates:
+            try:
+                if math.floor(percentile_values[num]) > 0:
+                    end_project_date = networkdays.JobSchedule(
+                        math.floor(percentile_values[num]),
+                        1,
+                        datetime.date.today(),
+                        networkdays=None,
+                    )
+                    percentile_entry = "ECD: {0} ({1})".format(
+                        end_project_date.prj_ends, percentile_entry
+                    )
+                else:
+                    percentile_entry = "Done: {0} ({1})".format(
+                        datetime.date.today(), percentile_entry
+                    )
+
+            except Exception as ex:
+                logger.error(
+                    "Checking percentile: {0} - {1}".format(ex, percentile_values[num])
+                )
+                percentile_entry = "p{0}={1}".format(percent_val, p_value)
 
         percentile_stats.append(
-            "p{0}={1}".format(percent_val, p_value),
+            percentile_entry
+            # "p{0}={1}".format(percent_val, p_value),
         )
 
     return "\\n".join(percentile_stats)
@@ -102,7 +137,7 @@ class DurationGenerator(ABC):
     def graphviz_node_attrs(self):
         return self.__dict__
 
-    def graphviz_node(self, node_id, parent_graph):
+    def graphviz_node(self, node_id, step_name, parent_graph):
         this_barename = classname_for_object(self)
         generator_params = []
         this_generator_attrs = self.graphviz_node_attrs()
@@ -115,7 +150,9 @@ class DurationGenerator(ABC):
 
         parent_graph.node(
             node_id,
-            "{{{0}|{1}}}".format(this_barename, "\\n".join(generator_params)),
+            "{{{0} ({1})|{2}}}".format(
+                step_name, this_barename, "\\n".join(generator_params)
+            ),
             {"fontsize": "8"},
         )
 
@@ -129,6 +166,7 @@ class CompletableTask(DurationGenerator):
         super(CompletableTask, self).__init__()
         self.generator = generator
         self.complete = complete
+        self.notes = None
 
     def graphviz_node_attrs(self):
         this_task_attrs = {
@@ -150,16 +188,33 @@ class CompletableTask(DurationGenerator):
 # returns a CompletableTask with the given TriangularGenerator and using integral
 # values only
 ################################################################################
-def PERTTask(lower_bound, mode=None, upper_bound=None, complete=False):
-    if upper_bound is None:
-        upper_bound = 2 * lower_bound
-    if mode is None:
-        mode = math.ceil(lower_bound * 1.66)
 
-    return CompletableTask(
-        complete=complete,
-        generator=TriangularGenerator(lower_bound, mode, upper_bound).integral(True),
-    )
+
+class PERTTask(CompletableTask):
+    def __init__(self, lower_bound, mode=None, upper_bound=None, complete=False):
+        if upper_bound is None:
+            upper_bound = 2 * lower_bound
+        if mode is None:
+            mode = math.ceil(lower_bound * 1.66)
+
+        super(PERTTask, self).__init__(
+            generator=TriangularGenerator(lower_bound, mode, upper_bound).integral(
+                True
+            ),
+            complete=complete,
+        )
+        self.notes = None
+
+    def graphviz_node_attrs(self):
+        this_task_attrs = {
+            "complete": "✅" if self.complete else "🔜",
+            "pert": "{0}:{1}:{2}".format(
+                self.generator.lower_bound,
+                self.generator.mode,
+                self.generator.upper_bound,
+            ),
+        }
+        return this_task_attrs
 
 
 ################################################################################
@@ -567,17 +622,19 @@ class WorkflowGraph(WorkflowSubgraph):
             if each_subgraph.join_output.percentiles is not None:
                 node_end_label = "{0}|{1}".format(
                     node_end_label,
-                    graphviz_percentiles_label(each_subgraph.join_output.percentiles),
+                    graphviz_percentiles_label(
+                        each_subgraph.join_output.percentiles, self.show_end_date
+                    ),
                 )
 
             if (
                 each_subgraph.join_output.min_value
                 <= each_subgraph.join_output.max_value
             ):
-                node_end_label = "{0}|[{1:.3f} - {2:.3f}]".format(
+                node_end_label = "{0}|Range: [{1} - {2}]".format(
                     node_end_label,
-                    each_subgraph.join_output.min_value,
-                    each_subgraph.join_output.max_value,
+                    formatted_float(each_subgraph.join_output.min_value),
+                    formatted_float(each_subgraph.join_output.max_value),
                 )
 
             node_end_label = "{{{0}}}".format(node_end_label)
@@ -589,7 +646,7 @@ class WorkflowGraph(WorkflowSubgraph):
             def append_subgraph_step_node(a_step):
                 node_id = "node{0}".format(uuid.uuid4())
                 try:
-                    a_step.generator.graphviz_node(node_id, dot_subgraph)
+                    a_step.generator.graphviz_node(node_id, a_step.name, dot_subgraph)
                 except Exception as ex:
                     logger.error("Graphviz node doesn't support self-render: %s", ex)
                     dot_subgraph.node(node_id, label=a_step.name)
@@ -685,13 +742,18 @@ class WorkflowGraph(WorkflowSubgraph):
         # Add the start node...
         digraph.node(start_node_name, "START")
 
+        # Include ECDs in the percentiles if we have self.show_end_date
+        percentiles_labels = graphviz_percentiles_label(
+            self.join_output.percentiles, self.show_end_date
+        )
+
         # And the SIMULATION results node
         # And the results node...
-        simulation_label = "Simulation (n={0})|{1}|[{2:.3f} - {3:.3f}]".format(
+        simulation_label = "Simulation (n={0})|{1}|Range: [{2} - {3}]".format(
             self.start_node.run_count,
-            graphviz_percentiles_label(self.join_output.percentiles),
-            self.join_output.min_value,
-            self.join_output.max_value,
+            percentiles_labels,
+            formatted_float(self.join_output.min_value),
+            formatted_float(self.join_output.max_value),
         )
         if self.show_end_date:
             job_min_end = networkdays.JobSchedule(
