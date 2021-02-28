@@ -50,4 +50,4 @@ def main():
 
 ## Output
 
-![Example Workflow](https://raw.githubusercontent.com/mweagle/PyWorkflowGraphSimulator/master/site/Example_Latencies.gv.svg)
+![Example Workflow](https://raw.githubusercontent.com/mweagle/PyWorkflowGraphSimulator/master/site/Example%20Latencies.gv.pdf)
