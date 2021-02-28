@@ -5,8 +5,8 @@ import os
 
 ################################################################################
 def main(tasks_filepath, output_format):
-    tasks_module = importlib.import_module(tasks_file)
-    file_base_name = os.path.basename(tasks_file)
+    tasks_module = importlib.import_module(tasks_filepath)
+    file_base_name = os.path.basename(tasks_filepath)
 
     # Stitch everything together
     wf = WorkflowGraph(
@@ -43,7 +43,7 @@ if __name__ == "__main__":
         if currentArgument in ("-o", "--output"):
             output_format = currentValue
         elif currentArgument in ("-i", "--input"):
-            pert_file = currentValue
+            task_file = currentValue
 
     ############################################################################
     main(task_file, output_format)

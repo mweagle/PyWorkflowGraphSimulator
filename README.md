@@ -36,8 +36,16 @@ def main():
 
 ## Execution
 
+### PERT Schedule
+
 ```shell
-> python tasks.py
+> python pert.py --input=workflows.project --output=svg
+```
+
+### Latency Schedule
+
+```shell
+> python tasks.py --input=workflows.latencies --output=svg
 ```
 
 ## Output
