@@ -4,5 +4,4 @@ __pycache__/*
 workflows/__pycache__/*
 *.gv
 *.png
-*.svg
 *.jpeg
