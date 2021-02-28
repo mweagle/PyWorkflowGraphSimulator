@@ -15,14 +15,15 @@ import math
 
 LATENCIES = "latencies"
 LATENCY_DICT = "latencydict"
-SIMULATED_RESULTS_OUTPUT_FILENAME = "results.png"
 
 # Color scheme to use
-DOT_COLOR_SCHEME = "spectral"
+DOT_COLOR_SCHEME = "rdylgn"
 DOT_COLOR_SCHEME_COUNT = 11
+DOT_START_COLOR_INDEX = 11
 
 OPERATION_FAILED_LATENCY = sys.maxsize
 JOIN_PERCENTILES = [50, 99, 99.5, 100]
+PERT_JOIN_PERCENTILES = [50, 90, 100]
 
 logging.basicConfig(format=logging.BASIC_FORMAT)
 logger = logging.getLogger("flowpipe")
@@ -46,7 +47,7 @@ def classname_for_object(some_object):
     return barename
 
 
-def duration_percentiles(array_of_durations):
+def duration_percentiles(array_of_durations, array_of_percentiles):
     def split(arr, cond):
         return [arr[cond], arr[~cond]]
 
@@ -54,7 +55,7 @@ def duration_percentiles(array_of_durations):
     valid, failed = split(
         array_of_durations, array_of_durations < OPERATION_FAILED_LATENCY
     )
-    return numpy.percentile(valid, JOIN_PERCENTILES)
+    return numpy.percentile(valid, array_of_percentiles)
 
 
 def formatted_float(in_value):
@@ -64,11 +65,13 @@ def formatted_float(in_value):
     return float_value
 
 
-def graphviz_percentiles_label(percentile_values, show_end_dates):
+def graphviz_percentiles_label(
+    percentiles_to_compute, percentile_values, show_end_dates
+):
 
     percentile_stats = []
 
-    for num, percent_val in enumerate(JOIN_PERCENTILES):
+    for num, percent_val in enumerate(percentiles_to_compute):
         # Handle the case where it's already a floor
         p_value = formatted_float(percentile_values[num])
         percentile_entry = "p{0}={1}".format(percent_val, p_value)
@@ -150,8 +153,11 @@ class DurationGenerator(ABC):
 
         parent_graph.node(
             node_id,
-            "{{{0} ({1})|{2}}}".format(
-                step_name, this_barename, "\\n".join(generator_params)
+            "{{{0} ({1}){2}{3}}}".format(
+                step_name,
+                this_barename,
+                "|" if len(generator_params) != 0 else "",
+                "\\n".join(generator_params),
             ),
             {"fontsize": "8"},
         )
@@ -305,6 +311,31 @@ class BetaGenerator(DurationGenerator):
 
 
 ################################################################################
+# FixedTask
+# Returns a task with a fixed duration
+################################################################################
+class FixedTask(DurationGenerator):
+    def __init__(self, duration):
+        super(FixedTask, self).__init__()
+        self.duration = duration
+
+    def generate(self, count):
+        return numpy.repeat(self.duration, count)
+
+
+################################################################################
+# EmptyTask
+# Returns an empty task
+################################################################################
+class EmptyTask(DurationGenerator):
+    def __init__(self):
+        super(EmptyTask, self).__init__()
+
+    def generate(self, count):
+        return numpy.zeros(count)
+
+
+################################################################################
 # UniformGenerator
 # Duration generator that uses uniform distribution
 ################################################################################
@@ -352,7 +383,7 @@ class WorkflowNode(INode):
         self.generator = generator
         InputPlug(LATENCIES, self)
         OutputPlug(LATENCIES, self)
-        logger.debug("InputNode::__init__, OUTPUTS", self.outputs)
+        logger.debug("InputNode::__init__, OUTPUTS: %s", self.outputs)
 
     def compute(self, latencies):
         logger.debug("InputNode::compute")
@@ -367,7 +398,9 @@ class WorkflowNode(INode):
 ################################################################################
 @Node(outputs=[LATENCIES])
 def InputNode(latencies):
-    logger.debug("InputNode. Dict len: %d", len(latencies))
+    logger.debug(
+        "InputNode. Dict len: %d", len(latencies) if latencies is not None else 0
+    )
     return {LATENCIES: latencies}
 
 
@@ -376,34 +409,48 @@ def InputNode(latencies):
 # Ensure reduce the set of input latencies to their highest pairwise values
 ################################################################################
 class JoinUpper(INode):
-    def __init__(self, **kwargs):
+    def __init__(self, percentiles_to_compute=JOIN_PERCENTILES, **kwargs):
         super(JoinUpper, self).__init__(**kwargs)
-        max_value = 0
-        min_value = 0
-        percentiles = None
+        self.max_value = 0
+        self.min_value = 0
+        self.percentiles = None
+        self.percentiles_to_compute = percentiles_to_compute
 
         logger.debug("JoinUpper::__init__")
         InputPlug(LATENCY_DICT, self)
         OutputPlug(LATENCIES, self)
-        logger.debug("JoinUpper::__init__, OUTPUTS", self.outputs)
+        logger.debug("JoinUpper::__init__, OUTPUTS: %s", self.outputs)
 
     def compute(self, latencydict):
         logger.debug("JoinUpper::__init__")
-        logger.debug("JoinUpper::compute. Dict len: %d", len(latencydict))
-        computed_values = max_latency(latencydict)
+        logger.debug(
+            "JoinUpper::compute. Dict len: %d",
+            len(latencydict) if latencydict is not None else 0,
+        )
+        computed_values = None
 
-        self.max_value = numpy.amax(
-            computed_values,
-            where=computed_values != OPERATION_FAILED_LATENCY,
-            initial=0,
-        )
-        self.min_value = numpy.amin(
-            computed_values,
-            where=computed_values >= 0,
-            initial=OPERATION_FAILED_LATENCY,
-        )
-        # Only compute percentiles for successful operations
-        self.percentiles = duration_percentiles(computed_values)
+        if latencydict is not None:
+            computed_values = max_latency(latencydict)
+
+            self.max_value = numpy.amax(
+                computed_values,
+                where=computed_values != OPERATION_FAILED_LATENCY,
+                initial=0,
+            )
+            self.min_value = numpy.amin(
+                computed_values,
+                where=computed_values >= 0,
+                initial=OPERATION_FAILED_LATENCY,
+            )
+            # Only compute percentiles for successful operations
+            self.percentiles = duration_percentiles(
+                computed_values, self.percentiles_to_compute
+            )
+        else:
+            self.max_value = 0
+            self.min_value = 0
+            self.percentiles = numpy.zeros(len(self.percentiles_to_compute))
+
         return {LATENCIES: computed_values}
 
 
@@ -411,56 +458,116 @@ class JoinUpper(INode):
 # Done
 # Done is the node that produces the matplotlib for all the inputs
 ################################################################################
-@Node()
-def Done(latencies):
-    # To support subgraphs we're going to get a dict of latencies
-    latency = latencies  # max_latency(latencies)
+class Done(INode):
+    def __init__(self, output_results_filename, **kwargs):
+        super(Done, self).__init__(**kwargs)
+        logger.debug("Done::__init__")
+        InputPlug(LATENCIES, self)
+        self.output_results_filename = output_results_filename
 
-    def split(arr, cond):
-        return [arr[cond], arr[~cond]]
+    def compute(self, latencies):
+        # To support subgraphs we're going to get a dict of latencies
+        latency = latencies  # max_latency(latencies)
 
-    # Split it
-    # plt.xkcd()
-    plt.rcParams["font.family"] = "Avenir"
+        def split(arr, cond):
+            return [arr[cond], arr[~cond]]
 
-    # Success/failure pie chart
-    valid, failed = split(latency, latency < OPERATION_FAILED_LATENCY)
-    has_failures = True if len(failed) != 0 else False
+        # Split it
+        # plt.xkcd()
+        plt.rcParams["font.family"] = "Avenir"
 
-    fig, axs = plt.subplots(1, 2 if not has_failures else 3)
-    fig.suptitle("Results".format(len(latencies)))
+        # Success/failure pie chart
+        valid, failed = split(latency, latency < OPERATION_FAILED_LATENCY)
+        has_failures = True if len(failed) != 0 else False
 
-    # Distribution
-    axs[0].hist(valid, density=True, histtype="stepfilled", bins=100, cumulative=True)
-    axs[0].set_xlabel("Duration")
-    axs[0].set_ylabel("Probability")
-    axs[0].set_title("Cumulative")
+        fig, axs = plt.subplots(1, 2 if not has_failures else 3)
+        fig.suptitle("Results: ({0})".format(len(latencies)))
 
-    # Distribution
-    axs[1].hist(valid, density=True, histtype="step", bins=100, cumulative=False)
-    axs[1].set_xlabel("Duration")
-    axs[1].set_ylabel("Frequency")
-    axs[1].set_title("Distribution")
-
-    # Is there a failure rate?
-    if has_failures:
-        labels = "Success", "Failure"
-        sizes = [len(valid), len(failed)]
-        explode = (0, 0.1)
-        axs[2].pie(
-            sizes,
-            explode=explode,
-            labels=labels,
-            autopct="%1.1f%%",
-            shadow=True,
-            startangle=90,
+        # Distribution
+        axs[0].hist(
+            valid, density=True, histtype="stepfilled", bins=100, cumulative=True
         )
-        axs[2].axis("equal")
-        axs[2].set_title("Success Rate")
+        axs[0].set_xlabel("Duration")
+        axs[0].set_ylabel("Probability")
+        axs[0].set_title("Cumulative")
 
-    # Save it
-    fig.tight_layout()
-    plt.savefig(SIMULATED_RESULTS_OUTPUT_FILENAME)
+        # Distribution
+        axs[1].hist(valid, density=True, histtype="step", bins=100, cumulative=False)
+        axs[1].set_xlabel("Duration")
+        axs[1].set_ylabel("Frequency")
+        axs[1].set_title("Distribution")
+
+        # Is there a failure rate?
+        if has_failures:
+            labels = "Success", "Failure"
+            sizes = [len(valid), len(failed)]
+            explode = (0, 0.1)
+            axs[2].pie(
+                sizes,
+                explode=explode,
+                labels=labels,
+                autopct="%1.1f%%",
+                shadow=True,
+                startangle=90,
+            )
+            axs[2].axis("equal")
+            axs[2].set_title("Success Rate")
+
+        # Save it
+        fig.tight_layout()
+        plt.savefig(self.output_results_filename)
+
+
+# @Node()
+# def Done(latencies):
+#     # To support subgraphs we're going to get a dict of latencies
+#     latency = latencies  # max_latency(latencies)
+
+#     def split(arr, cond):
+#         return [arr[cond], arr[~cond]]
+
+#     # Split it
+#     # plt.xkcd()
+#     plt.rcParams["font.family"] = "Avenir"
+
+#     # Success/failure pie chart
+#     valid, failed = split(latency, latency < OPERATION_FAILED_LATENCY)
+#     has_failures = True if len(failed) != 0 else False
+
+#     fig, axs = plt.subplots(1, 2 if not has_failures else 3)
+#     fig.suptitle("Results: ({0})".format(len(latencies)))
+
+#     # Distribution
+#     axs[0].hist(valid, density=True, histtype="stepfilled", bins=100, cumulative=True)
+#     axs[0].set_xlabel("Duration")
+#     axs[0].set_ylabel("Probability")
+#     axs[0].set_title("Cumulative")
+
+#     # Distribution
+#     axs[1].hist(valid, density=True, histtype="step", bins=100, cumulative=False)
+#     axs[1].set_xlabel("Duration")
+#     axs[1].set_ylabel("Frequency")
+#     axs[1].set_title("Distribution")
+
+#     # Is there a failure rate?
+#     if has_failures:
+#         labels = "Success", "Failure"
+#         sizes = [len(valid), len(failed)]
+#         explode = (0, 0.1)
+#         axs[2].pie(
+#             sizes,
+#             explode=explode,
+#             labels=labels,
+#             autopct="%1.1f%%",
+#             shadow=True,
+#             startangle=90,
+#         )
+#         axs[2].axis("equal")
+#         axs[2].set_title("Success Rate")
+
+#     # Save it
+#     fig.tight_layout()
+#     plt.savefig(output_results_filename)
 
 
 ################################################################################
@@ -468,12 +575,20 @@ def Done(latencies):
 # Subgraphs contain either serial or parallel steps
 ################################################################################
 class WorkflowSubgraph:
-    def __init__(self, name, parent_graph=None, create_input_node=True, **kwargs):
+    def __init__(
+        self,
+        name,
+        parent_graph=None,
+        create_input_node=True,
+        percentiles_to_compute=JOIN_PERCENTILES,
+        **kwargs
+    ):
         self.subgraphs = []
         self.parallel_steps = dict()
         self.serial_steps = []
         self.parent_graph = parent_graph
         self.graph = Graph(name=name)
+        self.percentiles_to_compute = percentiles_to_compute
 
         # All inputs come through here...
         if create_input_node:
@@ -483,7 +598,11 @@ class WorkflowSubgraph:
 
         # Everything in this subgraph will end up feeding into the Join
         join_output_name = "Upper Bound"
-        self.join_output = JoinUpper(graph=self.graph, name=join_output_name)
+        self.join_output = JoinUpper(
+            graph=self.graph,
+            name=join_output_name,
+            percentiles_to_compute=percentiles_to_compute,
+        )
         self.join_output.outputs[LATENCIES].promote_to_graph(name=LATENCIES)
 
     def parallel(self, dict_nodes):
@@ -518,8 +637,15 @@ class WorkflowSubgraph:
         ]
         return self
 
+    def ensure_connected(self):
+        if len(self.serial_steps) + len(self.parallel_steps) <= 0:
+            # Just connect them with an empty latency node...
+            self.serial(("NOP", EmptyTask()))
+
     def new_subgraph(self, subgraph_name):
-        subgraph = WorkflowSubgraph(name=subgraph_name)
+        subgraph = WorkflowSubgraph(
+            name=subgraph_name, percentiles_to_compute=self.percentiles_to_compute
+        )
         self.subgraphs.append(subgraph)
         return subgraph
 
@@ -529,16 +655,44 @@ class WorkflowSubgraph:
 # WorkflowGraph is the root of the entire layout
 ################################################################################
 class WorkflowGraph(WorkflowSubgraph):
-    def __init__(self, name, run_count=100000, show_end_date=False, **kwargs):
-        super().__init__(name, create_input_node=False, **kwargs)
+    def __init__(
+        self,
+        name,
+        run_count=100000,
+        show_end_date=False,
+        percentiles_to_compute=JOIN_PERCENTILES,
+        **kwargs
+    ):
+        super().__init__(
+            name,
+            create_input_node=False,
+            percentiles_to_compute=percentiles_to_compute,
+            **kwargs
+        )
         self.start_node = Workflow(
             name="{0} StartNode".format(name), run_count=run_count
         )
         self.show_end_date = show_end_date
-        self.done_node = Done(graph=self.graph, name="{0} DoneNode".format(name))
+        self.done_node = Done(
+            graph=self.graph,
+            name="{0} DoneNode".format(name),
+            output_results_filename="{0}.matplt.png".format(self.graph.name),
+        )
+
+        self.percentiles_to_compute = percentiles_to_compute
 
         # Hook them all up...
         self.join_output.outputs[LATENCIES] >> self.done_node.inputs[LATENCIES]
+
+    # Support reassigning the graph name after it's been constructed.
+    @property
+    def name(self):
+        return self.graph.name
+
+    @name.setter
+    def name(self, new_name):
+        self.graph.name = new_name
+        self.done_node.output_results_filename = "{0}.matplt.png".format(new_name)
 
     # All this does is allow subgraphs...we'll then stitch those together
     def resolve(self):
@@ -563,9 +717,10 @@ class WorkflowGraph(WorkflowSubgraph):
 
         # Stitch them....
         for each_subgraph in self.subgraphs:
+            each_subgraph.ensure_connected()
             resolve_subgraph(self.start_node, each_subgraph, self.join_output)
 
-    def as_dot(self):
+    def as_dot(self, output_format="jpeg"):
         # Accumulate any nested nodes that need to be written at the end...
         nested_orphaned_nodes = []
 
@@ -579,10 +734,11 @@ class WorkflowGraph(WorkflowSubgraph):
             output_node,
             root_output_node,
             root_graph,
-            color_index=1,
+            color_index=DOT_START_COLOR_INDEX,
         ):
 
             node_color_index = DOT_COLOR_SCHEME_COUNT - color_index
+            node_color_index = max(node_color_index, 1)
 
             subgraph_name = "cluster_{0}_{1}".format(
                 uuid.uuid4(), each_subgraph.graph.name
@@ -623,7 +779,9 @@ class WorkflowGraph(WorkflowSubgraph):
                 node_end_label = "{0}|{1}".format(
                     node_end_label,
                     graphviz_percentiles_label(
-                        each_subgraph.join_output.percentiles, self.show_end_date
+                        each_subgraph.percentiles_to_compute,
+                        each_subgraph.join_output.percentiles,
+                        self.show_end_date,
                     ),
                 )
 
@@ -685,7 +843,7 @@ class WorkflowGraph(WorkflowSubgraph):
                         output_node,
                         root_output_node,
                         root_graph,
-                        color_index=((color_index + 3) % DOT_COLOR_SCHEME_COUNT),
+                        color_index=(node_color_index % DOT_COLOR_SCHEME_COUNT),
                     )
 
             # Then add at the end
@@ -704,35 +862,40 @@ class WorkflowGraph(WorkflowSubgraph):
         ########################################################################
         # Primary Workflow graph
         ########################################################################
-        color_attrs = {
+        base_attrs = {
             "colorscheme": "{0}{1}".format(DOT_COLOR_SCHEME, DOT_COLOR_SCHEME_COUNT),
             "color": "{0}".format(3),
+            "fontname": "Avenir",
         }
+        output_format_attrs = {}
+        if output_format != "svg":
+            output_format_attrs["dpi"] = "300"
 
+        output_filename = "{0}.gv.{1}".format(self.graph.name, output_format)
+        logger.info("Creating output file: {0}".format(output_filename))
         digraph = Digraph(
             "workflow",
             filename="{0}.gv".format(self.graph.name),
-            format="svg",
+            format=output_format,
             node_attr={
                 "shape": "record",
-                "fontname": "Avenir",
                 "fontsize": "10",
             }
-            | color_attrs,
+            | base_attrs,
             graph_attr={
                 "compound": "true",
                 "rankdir": "TD",
-                "fontname": "Avenir",
                 "fontsize": "20",
                 "splines": "ortho",
                 "labelloc": "t",
-                "ranksep": "0",
-                "nodesep": "0.1",
+                "ranksep": "0.25",
+                "nodesep": "0.25",
                 "labelfontsize": "20",
                 "label": "<<B>{0}</B>>".format(self.graph.name),
             }
-            | color_attrs,
-            edge_attr=color_attrs,
+            | base_attrs
+            | output_format_attrs,
+            edge_attr=base_attrs,
         )
 
         start_node_name = "node{0}".format(uuid.uuid4())
@@ -740,11 +903,13 @@ class WorkflowGraph(WorkflowSubgraph):
         results_target_node = "node{0}".format(uuid.uuid4())
 
         # Add the start node...
-        digraph.node(start_node_name, "START")
+        digraph.node(start_node_name, "START", {"penwidth": "2"})
 
         # Include ECDs in the percentiles if we have self.show_end_date
         percentiles_labels = graphviz_percentiles_label(
-            self.join_output.percentiles, self.show_end_date
+            self.join_output.percentiles_to_compute,
+            self.join_output.percentiles,
+            self.show_end_date,
         )
 
         # And the SIMULATION results node
@@ -757,10 +922,16 @@ class WorkflowGraph(WorkflowSubgraph):
         )
         if self.show_end_date:
             job_min_end = networkdays.JobSchedule(
-                self.join_output.min_value, 1, datetime.date.today(), networkdays=None
+                max(1, self.join_output.min_value),
+                1,
+                datetime.date.today(),
+                networkdays=None,
             )
             job_max_end = networkdays.JobSchedule(
-                self.join_output.max_value, 1, datetime.date.today(), networkdays=None
+                max(1, self.join_output.max_value),
+                1,
+                datetime.date.today(),
+                networkdays=None,
             )
             simulation_label = "{0} | ECD: {1} - {2}".format(
                 simulation_label, job_min_end.prj_ends, job_max_end.prj_ends
@@ -779,7 +950,7 @@ class WorkflowGraph(WorkflowSubgraph):
             "",
             {
                 "shape": "none",
-                "image": SIMULATED_RESULTS_OUTPUT_FILENAME,
+                "image": self.done_node.output_results_filename,
             },
         )
         digraph.edge(results_target_node, end_node_name, None, {"penwidth": "5"})

@@ -1,31 +1,49 @@
 from pipe import *
+import sys, getopt
+import importlib
+import os
 
 ################################################################################
-def main():
-    workflow = WorkflowGraph(name="Example Workflow", run_count=100000)
-    workflow.new_subgraph("Some Work").serial(
-        ("OK Step1", NormalGenerator(10, 2)),
-        ("OK Step2", NormalGenerator(8, 2)),
-    )
-    workflow.new_subgraph("Safely Random").serial(
-        ("Roll 1", UniformGenerator(10, 20)),
-        ("Roll 2", UniformGenerator(20, 40)),
-    )
-    workflow.new_subgraph("Flaky Latency").serial(
-        ("Erratic", BernoulliGenerator(0.1, 100))
-    )
-    workflow.new_subgraph("Troublesome").serial(
-        ("Failing Step", FailingGenerator(failure_rate=0.1))
-    )
+def main(tasks_filepath, output_format):
+    tasks_module = importlib.import_module(tasks_file)
+    file_base_name = os.path.basename(tasks_file)
 
     # Stitch everything together
-    workflow.resolve()
-    workflow.graph.evaluate(mode="linear")
-    graphviz_output = workflow.as_dot()
+    wf = WorkflowGraph(
+        name=file_base_name,
+        show_end_date=False,
+        percentiles_to_compute=JOIN_PERCENTILES,
+    )
+    tasks_graph = tasks_module.workflow(wf)
+    tasks_graph.resolve()
+    tasks_graph.graph.evaluate(mode="linear")
+    tasks_graph.as_dot(output_format=output_format)
 
 
 ################################################################################
 # MAIN
 ################################################################################
+
+################################################################################
+# MAIN
+################################################################################
 if __name__ == "__main__":
-    main()
+    output_format = "jpeg"
+    task_file = ""
+
+    # Options
+    short_options = "i:o:"
+    # Long options
+    long_options = ["input=", "output="]
+
+    # checking each argument
+    argv = sys.argv[1:]
+    arguments, values = getopt.getopt(argv, short_options, long_options)
+    for currentArgument, currentValue in arguments:
+        if currentArgument in ("-o", "--output"):
+            output_format = currentValue
+        elif currentArgument in ("-i", "--input"):
+            pert_file = currentValue
+
+    ############################################################################
+    main(task_file, output_format)
